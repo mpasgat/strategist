@@ -4,14 +4,16 @@
 Использование:
   python tools/lint_claims.py output/strategy.md       # проверить один черновик
   python tools/lint_claims.py                          # проверить только реестр claims
-  python tools/lint_claims.py --hook                   # режим хука: все output/*.md
+  python tools/lint_claims.py --hook                   # режим хука: output/strategy.md и final.md, с шага 5
 
 Что проверяется:
   реестр:   уникальные id, допустимый тип, у fact есть source, файл источника существует.
   черновик: все [Cxxx] есть в реестре; ссылка не ведёт на отозванную запись (superseded);
             строка со ссылкой на assumption/forecast/unknown содержит слово-метку
             (допущение / прогноз / неизвестно);
-            строка с числом без ссылки на claim считается ошибкой.
+            строка с числом без ссылки на claim считается ошибкой (годы, Q1-Q4, «шаг N»,
+            «вариант N», «СТОП N», «часть N», «раздел N» числами не считаются);
+            якорь источника (#p4, #r2, #s3) существует в файле из project/sources.
   Исключение для строки: добавьте в конец <!-- ok -->.
 
 Коды выхода: 0 всё хорошо, 1 есть ошибки, 2 есть ошибки в режиме --hook (блокирует остановку агента).
@@ -19,6 +21,7 @@
 """
 import argparse
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -31,6 +34,15 @@ LABELS = {
 }
 REF_GROUP = re.compile(r"\[(C\d+(?:\s*,\s*C\d+)*)\]")
 MAX_PRINT = 30
+ROOT = Path(__file__).resolve().parents[1]
+HOOK_FILES = ("output/strategy.md", "output/final.md")
+HOOK_FROM_STEP = 5
+NOT_NUMBERS = re.compile(
+    r"\b(?:19|20)\d\d\b|\bQ[1-4]\b|\b[1-4]\s*кв(?:артал\w*)?\b|C\d+|"
+    r"(?:шаг\w*|вариант\w*|стоп|част\w*|раздел\w*|пункт\w*|п\.)\s*\d+|"
+    r"\b\d+\s*(?:вариант\w*|шаг\w*|остановк\w*)",
+    re.IGNORECASE,
+)
 
 
 def load_claims(path, errors, warnings):
@@ -69,8 +81,12 @@ def load_claims(path, errors, warnings):
                     s = str(s)
                     if s.startswith(("http://", "https://")):
                         continue
-                    if not Path(s.split("#")[0]).exists():
-                        errors.append(f"{cid}: файл источника не найден: {s.split('#')[0]}")
+                    fpath, _, anchor = s.partition("#")
+                    if not Path(fpath).exists():
+                        errors.append(f"{cid}: файл источника не найден: {fpath}")
+                    elif anchor and fpath.endswith(".md"):
+                        if f'id="{anchor}"' not in Path(fpath).read_text(encoding="utf-8"):
+                            errors.append(f"{cid}: в {fpath} нет метки #{anchor}")
         if ctype in ("assumption", "forecast") and not c.get("basis"):
             warnings.append(f"{cid}: у {ctype} нет поля basis (на чём держится)")
         claims[cid] = c
@@ -104,7 +120,7 @@ def lint_draft(path, claims, errors, warnings):
             labels = LABELS.get(c.get("type"))
             if labels and not any(w in s.lower() for w in labels):
                 errors.append(f"{where}: {cid} это {c['type']}, добавьте в строку слово «{labels[0]}…»")
-        body = REF_GROUP.sub("", s)
+        body = NOT_NUMBERS.sub("", REF_GROUP.sub("", s))
         body = re.sub(r"^\s*(?:[-*]\s+|\d+[.)]\s+)", "", body)
         if not ids and re.search(r"\d", body):
             errors.append(f"{where}: есть число, но нет ссылки [Cxxx]: {s[:60]}")
@@ -122,6 +138,7 @@ def main():
     ap.add_argument("--claims", default="state/claims.jsonl")
     ap.add_argument("--hook", action="store_true", help="режим хука Claude Code")
     a = ap.parse_args()
+    os.chdir(os.environ.get("CLAUDE_PROJECT_DIR") or ROOT)
 
     if a.hook:
         try:
@@ -130,7 +147,13 @@ def main():
                 return 0  # не зацикливаем остановку
         except Exception:
             pass
-        drafts = sorted(Path("output").glob("*.md"))
+        try:
+            step = int(json.loads(Path("state/task.json").read_text(encoding="utf-8")).get("step", 0))
+        except Exception:
+            step = 0
+        if step < HOOK_FROM_STEP:
+            return 0  # на шагах 1-4 и на остановках для человека не тратим лишний круг
+        drafts = [Path(f) for f in HOOK_FILES if Path(f).exists()]
     else:
         drafts = [Path(d) for d in a.draft]
 

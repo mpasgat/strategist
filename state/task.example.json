@@ -1,0 +1,19 @@
+{
+  "step": 1,
+  "step_name": "постановка",
+  "waiting_for_human": false,
+  "card": {
+    "question": "",
+    "goal": "",
+    "recipient": "",
+    "decisions_and_dates": [],
+    "constraints": [],
+    "data_available": [],
+    "out_of_scope": []
+  },
+  "chosen_option": null,
+  "done": [],
+  "next": "",
+  "open_questions": [],
+  "updated": ""
+}
