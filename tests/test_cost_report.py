@@ -78,3 +78,17 @@ def test_unknown_model_has_no_price(tmp_path):
     p.write_text(json.dumps(assistant("r", "x", U2, model="other-model")) + "\n", encoding="utf-8")
     s = cr.parse([p], PRICES)
     assert s["requests"] == 1 and s["usd"] == 0
+
+
+def test_hook_reads_stdin_as_utf8_with_cyrillic_path(project, transcript):
+    """Хук получает путь к транскрипту с кириллицей при локали cp1251 (Windows) и всё равно пишет строку."""
+    folder = project / "Документы пк"
+    folder.mkdir()
+    path = folder / "s1.jsonl"
+    path.write_text(transcript.read_text(encoding="utf-8"), encoding="utf-8")
+    stdin = json.dumps({"transcript_path": str(path)}, ensure_ascii=False)
+    r = run(project / "tools" / "cost_report.py", ["--hook"], cwd=project, stdin=stdin,
+            env_extra={"PYTHONIOENCODING": "cp1251", "PYTHONUTF8": "0"})
+    assert r.returncode == 0, r.stderr
+    costs = (project / "state" / "costs.csv").read_text(encoding="utf-8")
+    assert "s1," in costs

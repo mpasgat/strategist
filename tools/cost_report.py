@@ -196,7 +196,8 @@ def main():
 
     if a.hook:
         try:
-            data = json.load(sys.stdin)
+            # stdin всегда UTF-8: в Windows локаль cp1251 ломает путь с кириллицей
+            data = json.loads(sys.stdin.buffer.read().decode("utf-8"))
             path = Path(data["transcript_path"])
         except Exception:
             return 0

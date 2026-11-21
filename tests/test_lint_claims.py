@@ -123,3 +123,24 @@ def test_hook_blocks_from_step_5(project):
     r = lint(project, "--hook", stdin=json.dumps({"stop_hook_active": False}))
     assert r.returncode == 2
     assert "нет ссылки" in r.stderr
+
+
+def test_hook_reads_stdin_as_utf8_with_cyrillic_path(project):
+    """stop_hook_active распознаётся, даже если в stdin кириллица, а локаль процесса cp1251."""
+    make(project, "Выручка вырастет на 15% за год.\n", step=5)
+    stdin = json.dumps({"stop_hook_active": True,
+                        "transcript_path": "C:/Users/Иван/Документы/сессия.jsonl"}, ensure_ascii=False)
+    r = run(LINT, ["--hook"], cwd=project, stdin=stdin,
+            env_extra={"CLAUDE_PROJECT_DIR": str(project), "PYTHONIOENCODING": "cp1251", "PYTHONUTF8": "0"})
+    assert r.returncode == 0, r.stdout + r.stderr
+
+
+def test_root_option_checks_demo_folder(project, tmp_path):
+    """--root проверяет демо в своей папке: claims, черновик и источники относительно неё."""
+    demo = project / "examples" / "demo"
+    for d in ("project/sources", "state", "output"):
+        (demo / d).mkdir(parents=True)
+    make(demo, "Прибыль 279 млн руб. [C001]\nПо допущению примут 60% групп [C002]\nПрогноз: 9000 групп [C004]\n")
+    r = run(LINT, ["--root", "examples/demo", "output/strategy.md"], cwd=project)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "черновиков: 1" in r.stdout

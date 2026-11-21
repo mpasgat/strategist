@@ -5,6 +5,7 @@
   python tools/lint_claims.py output/strategy.md       # проверить один черновик
   python tools/lint_claims.py                          # проверить только реестр claims
   python tools/lint_claims.py --hook                   # режим хука: output/strategy.md и final.md, с шага 5
+  python tools/lint_claims.py --root examples/megafon output/final.md   # проверить демо в своей папке
 
 Что проверяется:
   реестр:   уникальные id, допустимый тип, у fact есть source, файл источника существует.
@@ -137,12 +138,16 @@ def main():
     ap.add_argument("draft", nargs="*", help="черновики .md")
     ap.add_argument("--claims", default="state/claims.jsonl")
     ap.add_argument("--hook", action="store_true", help="режим хука Claude Code")
+    ap.add_argument("--root", help="корень проекта, относительно которого читаются claims, черновики и источники "
+                                   "(например examples/megafon); по умолчанию CLAUDE_PROJECT_DIR или корень репозитория")
     a = ap.parse_args()
-    os.chdir(os.environ.get("CLAUDE_PROJECT_DIR") or ROOT)
+    root = Path(a.root).resolve() if a.root else Path(os.environ.get("CLAUDE_PROJECT_DIR") or ROOT)
+    os.chdir(root)
 
     if a.hook:
         try:
-            data = json.load(sys.stdin)
+            # stdin всегда UTF-8: в Windows локаль cp1251 ломает кириллицу в путях
+            data = json.loads(sys.stdin.buffer.read().decode("utf-8"))
             if data.get("stop_hook_active"):
                 return 0  # не зацикливаем остановку
         except Exception:
