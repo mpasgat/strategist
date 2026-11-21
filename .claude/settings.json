@@ -3,7 +3,8 @@
     "Stop": [
       {
         "hooks": [
-          { "type": "command", "command": "python \"$CLAUDE_PROJECT_DIR/tools/lint_claims.py\" --hook" }
+          { "type": "command", "command": "python \"$CLAUDE_PROJECT_DIR/tools/lint_claims.py\" --hook" },
+          { "type": "command", "command": "python \"$CLAUDE_PROJECT_DIR/tools/cost_report.py\" --hook" }
         ]
       }
     ]
