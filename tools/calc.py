@@ -13,6 +13,9 @@
   payback      окупаемость по кварталам или предельные вложения за срок
   sample-size  размер выборки для сравнения двух долей (с поправкой на кластеры) и срок набора
   delta        разница двух долей: процентные пункты и относительное изменение
+  mix          падение общей доли: вклад смены структуры групп и вклад изменения долей внутри групп
+  trial-value  ценность пробного аккаунта в горизонте: оплаченные месяцы, валовая прибыль, расходы
+  activation-payback  окупаемость роста активации от даты вложения: месячные когорты, кварталы, нужный прирост
 
 Пример:
   python tools/calc.py funnel --name family_funnel --created 1000 --accept 0.6/0.45 --action 0.5/0.35 \\
@@ -174,6 +177,139 @@ def sample_size(a, s):
     return res
 
 
+def parse_groups(text):
+    out = {}
+    for part in text.split(";"):
+        if not part.strip():
+            continue
+        name, _, nums = part.partition("=")
+        n, _, k = nums.partition(":")
+        try:
+            out[name.strip()] = (float(n), float(k))
+        except ValueError:
+            raise SystemExit(f"ошибка: группа '{part}' должна быть вида имя=всего:успехов")
+    return out
+
+
+def mix(a, s):
+    g0, g1 = parse_groups(a.base), parse_groups(a.current)
+    if set(g0) != set(g1):
+        raise SystemExit("ошибка: в --base и --current должны быть одни и те же группы")
+    n0 = sum(v[0] for v in g0.values())
+    n1 = sum(v[0] for v in g1.values())
+    rate0 = sum(v[1] for v in g0.values()) / n0
+    rate1 = sum(v[1] for v in g1.values()) / n1
+    groups = {}
+    std = 0.0
+    for k in g0:
+        r0, r1 = g0[k][1] / g0[k][0], g1[k][1] / g1[k][0]
+        std += g0[k][0] / n0 * r1
+        groups[k] = {"доля_в_базе": round(g0[k][0] / n0, 4), "доля_сейчас": round(g1[k][0] / n1, 4),
+                     "успех_в_базе": round(r0, 4), "успех_сейчас": round(r1, 4)}
+    return {
+        "группы": groups,
+        "общая_доля_база": round(rate0, 4),
+        "общая_доля_сейчас": round(rate1, 4),
+        "сейчас_при_структуре_базы": round(std, 4),
+        "изменение_всего_пп": round((rate1 - rate0) * 100, 2),
+        "вклад_структуры_пп": round((rate1 - std) * 100, 2),
+        "вклад_долей_внутри_групп_пп": round((std - rate0) * 100, 2),
+        "формула": "сейчас_при_структуре_базы = сумма(доля группы в базе * успех группы сейчас); "
+                   "вклад структуры = общая сейчас - она; вклад долей = она - общая в базе",
+    }
+
+
+def trial_value(a, s):
+    conv = share(a.convert[s], "--convert")
+    keep = share(a.retain[s], "--retain")
+    act = share(a.active[s], "--active")
+    t, h, n = int(a.trial_months[s]), int(a.horizon[s]), a.accounts[s]
+    paid_span = max(h - t, 0)
+    surv = sum(keep ** k for k in range(paid_span))
+    paid = conv * surv
+    gp = paid * a.margin[s]
+    free = act * t * a.free_cost[s]
+    acq = a.acq_cost[s]
+    net = gp - free - acq
+    res = {
+        "аккаунтов": n,
+        "пробный_месяцев": t, "горизонт_месяцев": h, "платных_месяцев_в_горизонте": paid_span,
+        "оплаченных_месяцев_на_аккаунт": round(paid, 3),
+        "валовая_прибыль_на_аккаунт_руб": round(gp, 1),
+        "расход_на_бесплатный_период_на_аккаунт_руб": round(free, 1),
+        "привлечение_на_аккаунт_руб": acq,
+        "итог_на_аккаунт_руб": round(net, 1),
+        "итог_всего_руб": round(net * n),
+        "формула": "итог = конверсия * сумма(удержание^k, k=0..платных_месяцев-1) * прибыль "
+                   "- активные * пробных_месяцев * расход_на_бесплатный_месяц - привлечение",
+    }
+    if a.target is not None and surv > 0:
+        need = (a.target[s] + free + acq) / (a.margin[s] * surv)
+        res["цель_итога_на_аккаунт_руб"] = a.target[s]
+        res["нужна_конверсия_для_цели"] = round(need, 4)
+    return res
+
+
+def _uplift_per_account(h, lift, pay, keep, fc, t, margin):
+    """Накопленный прирост итога на один аккаунт к концу h-го месяца от его начала."""
+    if h <= 0:
+        return 0.0
+    free = lift * min(h, t) * fc
+    paid = lift * pay * sum(keep ** k for k in range(max(h - t, 0)))
+    return paid * margin - free
+
+
+def _cum_from_investment(month, n, lag, lift, pay, keep, fc, t, margin):
+    """Накопленный прирост к концу month-го месяца от вложения; когорты по n аккаунтов
+    начинаются каждый месяц, первая в месяце lag + 1."""
+    return sum(n * _uplift_per_account(month - m + 1, lift, pay, keep, fc, t, margin)
+               for m in range(lag + 1, month + 1))
+
+
+def activation_payback(a, s):
+    n = a.accounts_per_month[s]
+    lift = share(a.upload_lift[s], "--upload-lift")
+    pay = share(a.pay_share[s], "--pay-share")
+    keep = share(a.retain[s], "--retain")
+    fc, margin = a.free_cost[s], a.margin[s]
+    t, lag, h = int(a.trial_months[s]), int(a.lag[s]), int(a.horizon[s])
+    if h % 3:
+        raise SystemExit("ошибка: --horizon должен делиться на 3 (считаем по кварталам)")
+    cum = lambda m, d=lift: _cum_from_investment(m, n, lag, d, pay, keep, fc, t, margin)
+    quarters, prev, when = [], 0.0, None
+    inv = a.investment[s] if a.investment else None
+    for q in range(1, h // 3 + 1):
+        c = cum(3 * q)
+        quarters.append({"квартал": q, "прирост_руб": round(c - prev), "накопленно": round(c)})
+        if inv is not None and when is None and c >= inv:
+            when = q
+        prev = c
+    res = {
+        "аккаунтов_в_месяц": n, "прирост_доли_загрузивших": lift, "платят_из_новых_загрузивших": pay,
+        "месяцев_до_запуска": lag, "горизонт_от_вложения_месяцев": h,
+        "по_кварталам": quarters, "накопленно_за_горизонт_руб": round(prev),
+        "формула": "прирост аккаунта к месяцу h = прирост_загрузки * платят * сумма(удержание^k, k=0..h-пробный-1) * прибыль "
+                   "- прирост_загрузки * min(h, пробный) * расход_на_бесплатный_месяц; "
+                   "сумма по месячным когортам, первая когорта в месяце (до_запуска + 1) от вложения",
+    }
+    if inv is not None:
+        res["вложения_руб"] = inv
+        res["окупается_в_квартале"] = when if when else "не окупается в горизонте расчёта"
+    if a.budgets:
+        need = {}
+        for b in a.budgets:
+            if cum(h, 1.0) < b:
+                need[str(round(b))] = "не окупается даже при приросте 100 п.п."
+                continue
+            lo, hi = 0.0, 1.0
+            for _ in range(50):
+                mid = (lo + hi) / 2
+                lo, hi = (lo, mid) if cum(h, mid) >= b else (mid, hi)
+            need[str(round(b))] = round(hi * 100, 1)
+        res["нужен_прирост_загрузки_пп_для_окупаемости"] = need
+    return res
+
+
 def cmd_delta(a, s):
     return delta(share(a.p0[s], "--p0"), share(a.p1[s], "--p1"))
 
@@ -181,6 +317,7 @@ def cmd_delta(a, s):
 COMMANDS = {
     "funnel": funnel, "breakeven": breakeven, "retention": retention,
     "payback": payback, "sample-size": sample_size, "delta": cmd_delta,
+    "mix": mix, "trial-value": trial_value, "activation-payback": activation_payback,
 }
 
 
@@ -216,6 +353,35 @@ def build_parser():
     p.add_argument("--quarterly-profit", type=seq, required=True, help="прибыль после прямых расходов по кварталам: 0;1e6;2e6")
     p.add_argument("--investment", type=val, help="вложения, руб; без него считаются предельные вложения")
     p.add_argument("--factor", type=val, default=val("1"), help="множитель прибыли по сценарию, например 1/0.6")
+
+    p = sub.add_parser("mix"); common(p)
+    p.add_argument("--base", required=True, help="группы базового периода: имя=всего:успехов;имя=всего:успехов")
+    p.add_argument("--current", required=True, help="те же группы в текущем периоде")
+
+    p = sub.add_parser("trial-value"); common(p)
+    p.add_argument("--convert", type=val, required=True, help="доля аккаунтов, платящих в первый платный месяц")
+    p.add_argument("--retain", type=val, required=True, help="месячное удержание платящих после первого платного месяца")
+    p.add_argument("--trial-months", type=val, required=True, help="бесплатных месяцев")
+    p.add_argument("--horizon", type=val, default=val("12"), help="горизонт от начала пробного, месяцев")
+    p.add_argument("--margin", type=val, required=True, help="валовая прибыль за оплаченный месяц, руб")
+    p.add_argument("--active", type=val, default=val("0"), help="доля аккаунтов, пользующихся в пробный период")
+    p.add_argument("--free-cost", type=val, default=val("0"), help="расход на активный аккаунт за бесплатный месяц, руб")
+    p.add_argument("--acq-cost", type=val, default=val("0"), help="расход на привлечение одного аккаунта, руб")
+    p.add_argument("--accounts", type=val, default=val("1"), help="аккаунтов в когорте")
+    p.add_argument("--target", type=val, help="итог на аккаунт, руб, для расчёта нужной конверсии")
+
+    p = sub.add_parser("activation-payback"); common(p)
+    p.add_argument("--accounts-per-month", type=val, required=True, help="новых аккаунтов в месяц")
+    p.add_argument("--upload-lift", type=val, required=True, help="прирост доли загрузивших, доля (0.15 = +15 п.п.)")
+    p.add_argument("--pay-share", type=val, required=True, help="доля платящих в первый платный месяц среди новых загрузивших")
+    p.add_argument("--retain", type=val, required=True, help="месячное удержание платящих")
+    p.add_argument("--margin", type=val, required=True, help="валовая прибыль за оплаченный месяц, руб")
+    p.add_argument("--free-cost", type=val, default=val("0"), help="расход на активный аккаунт за бесплатный месяц, руб")
+    p.add_argument("--trial-months", type=val, default=val("3"), help="бесплатных месяцев")
+    p.add_argument("--lag", type=val, default=val("0"), help="месяцев от вложения до запуска")
+    p.add_argument("--horizon", type=val, default=val("12"), help="горизонт от вложения, месяцев (кратно 3)")
+    p.add_argument("--investment", type=val, help="вложения, руб")
+    p.add_argument("--budgets", type=seq, help="бюджеты для расчёта нужного прироста: 300000;600000")
 
     for name in ("sample-size", "delta"):
         p = sub.add_parser(name); common(p)

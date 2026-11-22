@@ -81,3 +81,43 @@ def test_save_goes_to_output_calc(tmp_path, monkeypatch):
     assert data["base"]["нужно_доп_оплаченных_месяцев"] == 12000
     assert data["_meta"]["claims"] == "C001"
     assert (tmp_path / "output" / "calc" / "be.md").exists()
+
+
+def test_mix_pure_structure_shift():
+    r = run_calc("mix", "--base", "a=800:240;b=200:24", "--current", "a=400:120;b=600:72")
+    b = r["base"]
+    assert b["общая_доля_база"] == pytest.approx(0.264)
+    assert b["общая_доля_сейчас"] == pytest.approx(0.192)
+    assert b["вклад_долей_внутри_групп_пп"] == pytest.approx(0)
+    assert b["вклад_структуры_пп"] == pytest.approx(-7.2)
+
+
+def test_trial_value_and_needed_conversion():
+    r = run_calc("trial-value", "--convert", "0.5", "--retain", "1", "--trial-months", "3",
+                 "--horizon", "5", "--margin", "100", "--active", "1", "--free-cost", "10",
+                 "--target", "0")
+    b = r["base"]
+    assert b["оплаченных_месяцев_на_аккаунт"] == pytest.approx(1.0)
+    assert b["итог_на_аккаунт_руб"] == pytest.approx(70)       # 100 - 3*10
+    assert b["нужна_конверсия_для_цели"] == pytest.approx(0.15)  # 30 / (100*2)
+
+
+def test_activation_payback_simple_flow():
+    # 10 аккаунтов в месяц, прирост 10 п.п., все новые загрузившие платят, удержание 1, без расходов,
+    # пробный 1 мес., запуск сразу: к месяцу m когорта j даёт (m - j) оплаченных месяцев * 0.1 * 100
+    r = run_calc("activation-payback", "--accounts-per-month", "10", "--upload-lift", "0.1",
+                 "--pay-share", "1", "--retain", "1", "--margin", "100", "--trial-months", "1",
+                 "--horizon", "3", "--investment", "250")
+    b = r["base"]
+    assert b["накопленно_за_горизонт_руб"] == 300   # (2 + 1 + 0) * 10 * 0.1 * 100
+    assert b["окупается_в_квартале"] == 1
+
+
+def test_activation_payback_lag_and_needed_lift():
+    args = ["activation-payback", "--accounts-per-month", "10", "--upload-lift", "0.1", "--pay-share", "1",
+            "--retain", "1", "--margin", "100", "--trial-months", "1", "--horizon", "3"]
+    assert run_calc(*args, "--lag", "1")["base"]["накопленно_за_горизонт_руб"] == 100  # (1 + 0) * 100
+    r = run_calc(*args, "--budgets", "600;5000")
+    need = r["base"]["нужен_прирост_загрузки_пп_для_окупаемости"]
+    assert need["600"] == pytest.approx(20.0, abs=0.1)
+    assert need["5000"] == "не окупается даже при приросте 100 п.п."
