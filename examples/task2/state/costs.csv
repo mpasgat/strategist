@@ -1,2 +1,2 @@
 session_id,step,start,end,active_min,requests,models,input,cache_write,cache_read,output,usd_equiv,updated
-612c35f5-2819-4a38-90e7-e6db9da23553,7,2026-11-21T23:34:13.054Z,2026-11-22T00:03:52.567Z,13.2,55,claude-opus-5-5:52 claude-sonnet-5-5:3,118,164062,5864251,91340,4.0808,2026-11-22T03:03:57
+612c35f5-2819-4a38-90e7-e6db9da23553,7,2026-11-21T23:34:13.054Z,2026-11-22T00:04:58.832Z,13.2,63,claude-opus-5-5:60 claude-sonnet-5-5:3,134,174996,7276740,97097,4.566,2026-11-22T03:04:59
